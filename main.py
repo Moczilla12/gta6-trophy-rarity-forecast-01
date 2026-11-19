@@ -57,8 +57,16 @@ Details that matter:
   dilution prior: the next refresh multiplies tracked players several-
   fold while earners grow only a little, so rates fall.  The observed
   first refresh was 638 -> 3,868 players (6.06x), which for a small rate
-  is a logit shift of about -ln(6.06) = -1.8, so the median is shifted
-  down 1.8 logit with a wide spread.
+  is a logit shift of about -ln(6.06) = -1.8, so the first refresh costs
+  the median 1.8 logit.  But dilution grows with how many refreshes
+  happen before the target, so the shift is horizon-aware: the refresh
+  interval is estimated from the gaps between distinct snapshots (30
+  minutes when the page never moved), the expected number of refreshes
+  is the horizon divided by that interval, and the shift grows like a
+  random walk — -1.8 times the square root of the expected refreshes,
+  capped at three refreshes' worth and clamped to [-3.1, -1.8] so the
+  medians stay inside the band the practice cases calibrated.  The
+  spread stays wide, because the dilution magnitude is still uncertain.
 * A trophy at 100% stays (near) 100%: every tracked player earns the
   prologue trophy within minutes, and it survived the 6x refresh at 100%.
 
@@ -106,8 +114,18 @@ REFRESH_SIGMA_MATURE = 0.25
 REFRESH_DECAY_DAYS = 2.0
 # How much the median falls when the page is stale (launch night).
 # Observed first refresh: 638 -> 3,868 players = 6.06x, so for a small
-# rate the logit shift is -ln(6.06) = -1.80.
-STALE_SHIFT = -1.8
+# rate one refresh costs about -ln(6.06) = -1.80 logit.  A longer
+# horizon holds more refreshes, so the shift grows with the number of
+# refreshes expected before the target — square-root growth, like a
+# random walk — capped at three refreshes' worth and clamped to the
+# band the practice cases calibrated ([-3.1, -1.8]).
+STALE_SHIFT_PER_REFRESH = -1.8
+STALE_SHIFT_MIN = -3.1
+STALE_SHIFT_MAX = -1.8
+STALE_MAX_REFRESHES = 3.0
+# Cadence assumed for the stale-page estimate when the history is a
+# single frozen page (the house read every 30 minutes early on).
+STALE_DEFAULT_REFRESH_MIN = 30.0
 # Extra uncertainty (logit) about the dilution magnitude on a stale page.
 STALE_SIGMA = 0.45
 # A stale page only counts while the game is this young (hours).
@@ -231,6 +249,40 @@ def refresh_interval_minutes(snaps: list) -> float:
     return min(max(med, 30.0), 720.0)
 
 
+def stale_refresh_interval_minutes(snaps: list) -> float:
+    """Median gap between distinct snapshots, for the stale-page
+    dilution estimate.  When the history is a single frozen page
+    there is no gap to measure, so fall back to the house's early
+    30-minute read cadence."""
+    if len(snaps) < 2:
+        return STALE_DEFAULT_REFRESH_MIN
+    gaps = []
+    for a, b in zip(snaps, snaps[1:]):
+        g = (b["slot"] - a["slot"]).total_seconds() / 60.0
+        if g > 0:
+            gaps.append(g)
+    if not gaps:
+        return STALE_DEFAULT_REFRESH_MIN
+    gaps.sort()
+    med = gaps[len(gaps) // 2] if len(gaps) % 2 else 0.5 * (gaps[len(gaps) // 2 - 1] + gaps[len(gaps) // 2])
+    return min(max(med, 10.0), 720.0)
+
+
+def stale_shift_logit(horizon_minutes: float, snaps: list) -> float:
+    """Horizon-aware stale-page dilution shift, in logit.  The first
+    refresh multiplies the tracked base ~6x and costs about -1.8
+    logit on a small rate; each further refresh before the target
+    adds a diminishing amount (square-root growth, like a random
+    walk), capped at three refreshes' worth.  Clamped so the shift
+    never falls below the one-refresh cost or above the three-refresh
+    cost, keeping the medians inside the calibrated band."""
+    interval = stale_refresh_interval_minutes(snaps)
+    expected = horizon_minutes / interval if interval > 0 else 1.0
+    n = min(max(expected, 0.0), STALE_MAX_REFRESHES)
+    shift = STALE_SHIFT_PER_REFRESH * math.sqrt(n)
+    return min(max(shift, STALE_SHIFT_MIN), STALE_SHIFT_MAX)
+
+
 def wls_line(xs: list, ys: list, ws: list):
     """Weighted least-squares line y ~ a + b*x.  Returns (a, b, x_bar,
     y_bar, resid_rms) or None when the slope is not identified."""
@@ -283,13 +335,17 @@ def forecast_case(case: dict, name: str) -> dict:
     if stale:
         rw = RW_SIGMA * math.sqrt(horizon_days)
         sigma = math.sqrt(rw ** 2 + refresh_floor(age_days) ** 2 + STALE_SIGMA ** 2)
+        # Horizon-aware dilution: the shift grows with the number of
+        # refreshes expected before the target, clamped to the
+        # calibrated band, instead of a fixed -1.8 for every horizon.
+        shift = stale_shift_logit(horizon_minutes, snaps)
         rows = []
         for i, trophy in enumerate(trophies):
             rate = last_rates[i] if i < len(last_rates) else None
             if rate is not None and rate >= 99.99:
                 rows.append({"id": trophy["id"], "q": quantiles_from_logit(logit(99.99), FULL_SPREAD)})
             else:
-                rows.append({"id": trophy["id"], "q": quantiles_from_logit(logit(rate if rate is not None else 0) + STALE_SHIFT, sigma)})
+                rows.append({"id": trophy["id"], "q": quantiles_from_logit(logit(rate if rate is not None else 0) + shift, sigma)})
         return {"trophies": rows}
 
     # --- Moving history: earners/players decomposition. ---
