@@ -73,14 +73,15 @@ Details that matter:
   earliest, most active adopters, and they keep playing and earning
   in the ~90 minutes between the last frozen read and the target,
   while the newcomers contribute almost no earners yet.  So the
-  earners behind the median grow first — 1.5x for a story/secret
-  trophy the cohort races through, 1.3x for another bronze activity,
-  1.15x for a silver/gold/platinum grind — and only then does the
+  earners behind the median grow first — 1.6x for a story/secret
+  trophy the cohort races through, 1.4x for another bronze activity,
+  1.2x for a silver/gold/platinum grind — and only then does the
   6.06x dilution divide them.  The -1.8 dilution itself is unchanged;
-  the growth offsets part of it on the logit scale (+ln(1.5) = +0.41
-  for a story trophy).  The refresh-jump floor in the stale spread
-  is scaled down 10%: v1's 90% coverage was 0.9636 against a 0.90
-  target, so the spread was slightly too wide.
+  the growth offsets part of it on the logit scale (+ln(1.6) = +0.47
+  for a story trophy).  The stale spread is narrowed 25% in total:
+  v2's 90% coverage ran 0.9818 against a 0.90 target, so the whole
+  stale sigma is scaled by 0.75 — the median is now close (typical
+  miss 0.05pp), so a wide interval only costs pinball loss.
 * A trophy at 100% stays (near) 100%: every tracked player earns the
   prologue trophy within minutes, and it survived the 6x refresh at 100%.
 
@@ -137,21 +138,29 @@ REFRESH_DECAY_DAYS = 2.0
 # happens.  Later refreshes dilute far less than the first (the base
 # is already large), so no extra shift is added for a longer horizon.
 STALE_SHIFT = -1.8
-# Earner growth in the stale case (v2): the 638 tracked players are
+# Earner growth in the stale case (v3): the 638 tracked players are
 # the earliest, most active adopters and they keep playing and
 # earning between the last frozen read and the target, while the
 # newcomers contribute almost no earners yet.  Growth by trophy
 # kind: a story/secret trophy the cohort races through in the
-# opening hours, 1.5x; another bronze activity, 1.3x; a silver,
-# gold or platinum grind, 1.15x — those take far longer than ~90
+# opening hours, 1.6x; another bronze activity, 1.4x; a silver,
+# gold or platinum grind, 1.2x — those take far longer than ~90
 # minutes to earn, so the cohort barely adds earners there.
-STALE_GROWTH_SECRET = 1.5
-STALE_GROWTH_BRONZE = 1.3
-STALE_GROWTH_HARD = 1.15
+# (v2 used 1.5x / 1.3x / 1.15x; v2's loss improved only a little,
+# so the median was still slightly low and the factors rise a touch.)
+STALE_GROWTH_SECRET = 1.6
+STALE_GROWTH_BRONZE = 1.4
+STALE_GROWTH_HARD = 1.2
 # Refresh-jump floor scale in the stale spread (v2): v1's 90%
 # coverage was 0.9636 against a 0.90 target, so the floor is
 # scaled down 10%.  The random-walk term is unchanged.
 STALE_FLOOR_SCALE = 0.9
+# Total stale-spread scale (v3): v2's 90% coverage ran 0.9818
+# against a 0.90 target — the whole stale sigma was far too wide —
+# so the total stale sigma is scaled by 0.75.  The median is now
+# close (typical miss 0.05pp), so a wide interval only costs
+# pinball loss.  Applies to the stale branch only.
+STALE_SPREAD_SCALE = 0.75
 # Extra uncertainty (logit) about the dilution magnitude on a stale page.
 STALE_SIGMA = 0.45
 # A stale page only counts while the game is this young (hours).
@@ -341,7 +350,11 @@ def forecast_case(case: dict, name: str) -> dict:
         # v2: the refresh-jump floor is scaled down 10% — v1's 90%
         # coverage ran 0.9636 against a 0.90 target.
         floor = refresh_floor(age_days) * STALE_FLOOR_SCALE
-        sigma = math.sqrt(rw ** 2 + floor ** 2 + STALE_SIGMA ** 2)
+        # v3: the whole stale sigma is scaled by 0.75 — v2's 90%
+        # coverage ran 0.9818 against a 0.90 target, so the spread
+        # was far too wide and a wide interval only costs pinball
+        # loss now that the median is close.
+        sigma = math.sqrt(rw ** 2 + floor ** 2 + STALE_SIGMA ** 2) * STALE_SPREAD_SCALE
         # Fixed one-refresh dilution: -1.8 logit, the observed
         # 638 -> 3,868 jump.  Not scaled by the horizon — the read
         # cadence is not the refresh interval, and later refreshes
@@ -353,13 +366,13 @@ def forecast_case(case: dict, name: str) -> dict:
             if rate is not None and rate >= 99.99:
                 rows.append({"id": trophy["id"], "q": quantiles_from_logit(logit(99.99), FULL_SPREAD)})
             else:
-                # v2: the cohort keeps earning into the refresh, so
+                # v3: the cohort keeps earning into the refresh, so
                 # its earners grow by the trophy's factor before the
                 # dilution divides them: earners_target =
                 # earners_last * growth, rate = 100 * earners_target
                 # / (players_last * 6.06).  On the logit scale the
-                # growth offsets part of the -1.8 shift (+ln(1.5)
-                # = +0.41 for a story trophy); the -1.8 itself is
+                # growth offsets part of the -1.8 shift (+ln(1.6)
+                # = +0.47 for a story trophy); the -1.8 itself is
                 # unchanged.
                 g = stale_growth(trophy)
                 rows.append({"id": trophy["id"], "q": quantiles_from_logit(logit(rate if rate is not None else 0) + shift + math.log(g), sigma)})
