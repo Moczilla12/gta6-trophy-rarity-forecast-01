@@ -155,12 +155,15 @@ STALE_GROWTH_HARD = 1.2
 # coverage was 0.9636 against a 0.90 target, so the floor is
 # scaled down 10%.  The random-walk term is unchanged.
 STALE_FLOOR_SCALE = 0.9
-# Total stale-spread scale (v3): v2's 90% coverage ran 0.9818
-# against a 0.90 target — the whole stale sigma was far too wide —
-# so the total stale sigma is scaled by 0.75.  The median is now
-# close (typical miss 0.05pp), so a wide interval only costs
-# pinball loss.  Applies to the stale branch only.
-STALE_SPREAD_SCALE = 0.75
+# Total stale-spread scale (v4): v3's 90% coverage was still 0.9636
+# against a 0.90 target — 53 of 55 trophies inside the interval —
+# so the total stale sigma is narrowed a further 20% on top of
+# v3's 0.75, i.e. 0.60.  The median is roughly right now (typical
+# miss 0.06pp), so the spread, not the median, is the main lever
+# left.  The median and the earner-growth factors are untouched
+# in this iteration, so only the interval width moves.
+# Applies to the stale branch only.
+STALE_SPREAD_SCALE = 0.60
 # Extra uncertainty (logit) about the dilution magnitude on a stale page.
 STALE_SIGMA = 0.45
 # A stale page only counts while the game is this young (hours).
